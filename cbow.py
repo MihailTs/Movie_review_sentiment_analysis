@@ -1,10 +1,11 @@
 import json
-
+from collections import Counter
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+import pandas as pd
 
 # continuous bag of words
 class CBOWDataset(Dataset):
@@ -18,22 +19,19 @@ class CBOWDataset(Dataset):
         context, target = self.data[index]
         return torch.tensor(context, dtype=torch.long), torch.tensor(target, dtype=torch.long)
     
-# using a simple hardcoded dataset for now
-corpus = [
-    "the cat sat on the mat",
-    "the dog barked at the cat",
-    "the bird sang a song",
-    "cats and dogs are animals",
-    "the mat was sat on by the cat",
-    "the cat chased the bird",
-    "a bird sang to a bird"
-]
+df_reviews = pd.read_csv("movies_cleaned.csv")
+corpus = df_reviews["text"]
 # contextless padding
 PADDING = "<PAD>"
+UNKNOWN = "<UNK>"
 
 corpus_words = [word for sentence in corpus for word in sentence.split()]
-vocabulary = sorted(set(corpus_words))
+
+word_counts = Counter(corpus_words)
+# keep only words that appear >= 3 times
+vocabulary = [word for word, count in word_counts.items() if count >= 3]
 vocabulary.append(PADDING)
+vocabulary.append(UNKNOWN)
 word2idx = {word: i for i, word in enumerate(vocabulary)}
 idx2word = {i: word for word, i in word2idx.items()}
 vocabulary_size = len(vocabulary)
@@ -56,9 +54,10 @@ def generate_corpus_data(corpus, window_size):
             
             for j in range(-window_size, window_size + 1):
                 if j != 0:
-                    context.append(word2idx[words[i + j]])
+                    word = words[i + j]
+                    context.append(word2idx.get(word, word2idx[UNKNOWN]))
             
-            target = word2idx[words[i]]
+            target = word2idx.get(words[i], word2idx[UNKNOWN])
             data.append((context, target))
 
     return data
@@ -66,7 +65,7 @@ def generate_corpus_data(corpus, window_size):
 corpus_data = generate_corpus_data(corpus, window_size)
 
 dataset = CBOWDataset(corpus_data)    
-dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+dataloader = DataLoader(dataset, batch_size=1024, shuffle=True)
 
 class CBOWModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
@@ -89,17 +88,21 @@ class CBOWModel(nn.Module):
         return output
     
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # training the model
-embedding_dim = 50
+embedding_dim = 100
 model = CBOWModel(vocabulary_size, embedding_dim)
+model = model.to(device)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-for epoch in range(50):
+for epoch in range(10):
     total_loss = 0
     
     for context, target in dataloader:
+        context, target = context.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(context)
         loss = criterion(output, target)
